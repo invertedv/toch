@@ -1,13 +1,13 @@
 // toch moves data from files and the web into ClickHouse.
 // Features of toch include:
-//     - File types supported are:
-//        - tab delimited
-//        - CSV
-//        - Excel (XLS (linux), XLSX)
+//     - Multiple data formats are supported:
+//          - tab delimited
+//          - CSV
+//          - Excel: XLS (linux only) and XLSX formats
 //
-//      - Files can have headers or not.
-//      - Field names and types can be supplied
-//      - Excel sheet and cell range can be supplied
+//      - Data sets can have headers or not
+//      - Field names can be user-supplied or changed from the data header
+//      - Field types can be imputed or supplied
 //
 // Required command line arguments:
 //    -s       source of data. This is either a file or web address.
@@ -24,18 +24,22 @@
 //    -password       ClickHouse password. Default: ""
 //    -c [Y/N]        convert field names to camel case. Default N
 //    -q <char>       character for delimiting text. Default: "
-//    -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the file.
-//    -t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the file. Supported types are:
-//        -f   Float64
-//        -i   Int64
-//        -d   Date
-//        -s   String
-//     -sheet          sheet name for Excel inputs.  If this is omitted, the first sheet is read.
-//     -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken.
-//     -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken.
+//    -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
+//    -t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
+//        f   Float64
+//        i   Int64
+//        d   Date
+//        s   String
+//     -sheet          sheet name for Excel inputs. Default: first sheet in the workbook.
+//     -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
+//     -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
 // Notes:
 //   - S and E are 0-based indices.
-//   - if any headers or any field types are supplied, then they must be supplied for all fields.
+//   - if -h is supplied, the list must include all fields.
+//   - if -t is supplied, the list must included all fields.
+//   - The options -h and -t are independent: one can be supplied without the other.
+//   - ctrl-R's in the data are ignored.
+//   - The -skip parameter works with spreadsheets, too. It is applied within (any possible) range supplied by -rows.
 //
 // Values that are illegal for the field type are filled in as:
 //    - Float64  the maximum value for Float64 (~E308)
@@ -45,14 +49,28 @@
 //
 // Examples
 //
+// The command
 //       toch   -table laSeries -type text -s https://download.bls.gov/pub/time.series/la/la.series
-// loads the la.series table into ClickHouse table laSeries
+// loads the la.series table from the Bureau of Labor Statistics into ClickHouse table laSeries.
 //
-//       toch  -host 127.0.0.1 -user root -password abc234 -table test -type text -s https://download.bls.gov/pub/time.series/la/la.series -h 'a,b,c,d,e,f,g,h,i,j,k,l' -skip 1
-// loads the same table as above, but overrides the field names in the table with 'a' through 'l'.  The -skip 1 argument will ignore the header row in the table.
-//       toch  -table msa -type csv -s /home/will/Downloads/HPI_AT_metro.csv -h 'name,msa,year, qtr, ind, delta' -t 's,s,i,i,f,s'
-// The data here has no header row, so the headers are supplied.  The imputation wants to make the "msa" field an integer since
-// all the values are digits.  This is overridden to make the field a string.
+// And this command
+//       toch  -table test -type text -s https://download.bls.gov/pub/time.series/la/la.series -h 'a,b,c,d,e,f,g,h,i,j,k,l' -skip 1
+// loads the same table as above, but overrides the field names in the table with 'a' through 'l'.
+// The -skip 1 argument is used so that the header row will not be read as a part of the data.
+//
+// The data in this csv from the FHFA has no header row.
+//       toch  -table msa -type csv -s https://www.fhfa.gov/DataTools/Downloads/Documents/HPI/HPI_AT_metro.csv -h 'name,msa,year, qtr, ind, delta' -t 's,s,i,i,f,s'
+// The -h option supplies the headers.  The imputation wants to make the "msa" field an integer since
+// all the values are digits.  The -t option is used to override that to make the field a string.
+//
+// The command below reads an Excel spreadsheet.  The first tab in the workbook is read starting in row 4
+// (Excel calls this row 5) and column C.
+//       toch -table XlTest -type XLSX -s test.xlsx -rows 4:0 -cols 2:0
+//
+// This command reads the same data, but specifies the field types to both be strings and the field names to be 'x' and 'y':
+//        toch -table XlTest -type XLSX -s test.xlsx -rows 5:0 -cols 2:0 -h 'x,y' -t 's,s'
+// Since the header row in the spreadsheet is not used, the starting row is one larger.  We could have also
+// kept "-rows 4:0" and added "-skip 1".
 package main
 
 import (
@@ -112,6 +130,7 @@ func main() {
 	headers, fieldTypes, camel, quote, xlArea, err :=
 		flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr, skipPtr)
 	if err != nil {
+		help() // print help string
 		log.Fatalln(err)
 	}
 
@@ -175,7 +194,7 @@ func buildReader(source string, sType string, skip int, quote rune, camel bool, 
 			if camel {
 				fd.Name = toCamel(fd.Name)
 			}
-			if isIn(&fd.Name, reserved, true) {
+			if isIn(&fd.Name, reserved, false) {
 				fd.Name += "1"
 			}
 			// we may have renamed the key...
@@ -260,7 +279,7 @@ func newHttp(source string, sType string, quote rune, skip int, xl []int, xlShee
 	case "xls":
 		// this works only on linux.  Save this as a file and then use the newFile protocol.  That
 		// will use libreoffice to convert it to an XLSX so that excelize can read it.
-		fileName := "/tmp/test.xls"
+		fileName := "/tmp/tmp.xls"
 		f, e := os.Create(fileName)
 		if e != nil {
 			return nil, e
@@ -312,6 +331,8 @@ func newFile(source string, sType string, quote rune, skip int, xl []int, xlShee
 func toCamel(snake string) string {
 	// replace spaces in field name with underscores
 	snake = strings.ReplaceAll(snake, " ", "_")
+	// lower-case the first character
+	snake = strings.Replace(snake, snake[0:0], strings.ToLower(snake[0:0]), 1)
 	const chars = "._"
 	snake = strings.ToLower(snake)
 
@@ -323,13 +344,14 @@ func toCamel(snake string) string {
 }
 
 // isIn checks whether needle is in the stack.
-// side effect: needle is changed ToLower
-func isIn(needle *string, stack []string, lower bool) bool {
-	if lower {
-		*needle = strings.ToLower(*needle)
+// if toLower is true, needle is lower-cased
+func isIn(needle *string, stack []string, toLower bool) bool {
+	check := strings.ToLower(*needle)
+	if toLower {
+		*needle = check
 	}
 	for _, s := range stack {
-		if s == *needle {
+		if s == check {
 			return true
 		}
 	}
@@ -424,4 +446,49 @@ func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsP
 		xlArea[2+ind] = int(cx)
 	}
 	return
+}
+
+// help prints out some help when the command line arguments don't parse correctly
+func help() {
+	help := `
+Required command line arguments:
+   -s       source of data. This is either a file or web address.
+   -type    type of data.  Supported types are:
+         -text   tab delimited
+         -csv    comma separated
+         -xls    Excel XLS
+         -xlsx   Excel XLSX
+   -table   destination ClickHouse table.
+
+Optional command line arguments:
+   -host           IP of ClickHouse database. Default: 127.0.0.1
+   -user           ClickHouse user. Default: "default"
+   -password       ClickHouse password. Default: ""
+   -c [Y/N]        convert field names to camel case. Default N
+   -q <char>       character for delimiting text. Default: "
+   -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the file.
+   -t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the file. Supported types are:
+       f   Float64
+       i   Int64
+       d   Date
+       s   String
+    -sheet          sheet name for Excel inputs.  If this is omitted, the first sheet is read.
+    -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
+    -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
+Notes:
+  - S and E are 0-based indices.
+  - if -h is supplied, the list must include all fields.
+  - if -t is supplied, the list must included all fields.
+  - The options -h and -t are independent: one can be supplied without the other.
+  - ctrl-R's in the data are ignored.
+  - The -skip parameter works with spreadsheets, too. It is applied within (any possible) range supplied by -rows.
+
+Values that are illegal for the field type are filled in as:
+   - Float64  the maximum value for Float64 (~E308)
+   - Int64    the maximum value for Int64 (9223372036854775807)
+   - Date     1970/1/1
+   - String   "!"
+
+`
+	fmt.Println(help)
 }
