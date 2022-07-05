@@ -395,7 +395,7 @@ func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsP
 		err = fmt.Errorf("-c option is Y or N")
 		return
 	}
-	camel = (*camelPtr == "y")
+	camel = *camelPtr == "y"
 
 	if len(*quotePtr) > 1 {
 		err = fmt.Errorf("-q option is a single character")

@@ -2,7 +2,7 @@ module github.com/invertedv/toch
 
 go 1.18
 
-require github.com/invertedv/chutils v1.1.6
+require github.com/invertedv/chutils v1.1.7
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.0.14 // indirect
