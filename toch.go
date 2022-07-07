@@ -23,6 +23,8 @@
 //    -user           ClickHouse user. Default: "default"
 //    -password       ClickHouse password. Default: ""
 //    -c [Y/N]        convert field names to camel case. Default N
+//    -i [Y/N]        ignore read errors. Default: N
+//    -skip <n>       rows to skip at beginning of file. Default: 0.
 //    -q <char>       character for delimiting text. Default: "
 //    -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
 //    -t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
@@ -120,6 +122,7 @@ func main() {
 	fieldPtr := flag.String("t", "", "string")
 	quotePtr := flag.String("q", `"`, "string")
 	skipPtr := flag.Int("skip", 0, "int")
+	ignorePtr := flag.String("i", "N", "string")
 
 	xlRowsPtr := flag.String("rows", "0:0", "string")
 	xlColsPtr := flag.String("cols", "0:0", "string")
@@ -127,8 +130,8 @@ func main() {
 
 	flag.Parse()
 	// work through the flags
-	headers, fieldTypes, camel, quote, xlArea, err :=
-		flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr, skipPtr)
+	headers, fieldTypes, camel, ignore, quote, xlArea, err :=
+		flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr, skipPtr, ignorePtr)
 	if err != nil {
 		help() // print help string
 		log.Fatalln(err)
@@ -165,7 +168,7 @@ func main() {
 	}()
 
 	// now do the transfer
-	if e := chutils.Export(rdr, wtr, 0); e != nil {
+	if e := chutils.Export(rdr, wtr, 0, ignore); e != nil {
 		log.Fatalln(e)
 	}
 	ts := int(time.Since(s).Seconds())
@@ -386,7 +389,7 @@ func sep(sType string) rune {
 //    - xlArea       range on spreadsheet to pull : [row Min, row Max, col Min, col Max]
 //    - err          error
 func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr *string,
-	skipPtr *int) (headers []string, fieldTypes []string, camel bool, quote rune, xlArea []int, err error) {
+	skipPtr *int, ignorePtr *string) (headers []string, fieldTypes []string, camel bool, ignore bool, quote rune, xlArea []int, err error) {
 
 	headers = make([]string, 0)
 	fieldTypes = make([]string, 0)
@@ -405,6 +408,11 @@ func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsP
 		return
 	}
 	camel = *camelPtr == "y"
+	if !isIn(ignorePtr, ctypes, true) {
+		err = fmt.Errorf("-c option is Y or N")
+		return
+	}
+	ignore = *ignorePtr == "y"
 
 	if len(*quotePtr) > 1 {
 		err = fmt.Errorf("-q option is a single character")
