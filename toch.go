@@ -296,6 +296,14 @@ func newHttp(source string, sType string, quote rune, skip int, xl []int, xlShee
 	}
 }
 
+// getDir returns the directory portion of a file path
+func getDir(path string) string {
+	if ind := strings.LastIndex(path, "/"); ind > 0 {
+		return path[0:ind]
+	}
+	return path
+}
+
 // newFile creates a reader for data coming from a file
 func newFile(source string, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
 	f, err := os.Open(source)
@@ -306,9 +314,10 @@ func newFile(source string, sType string, quote rune, skip int, xl []int, xlShee
 	case "text", "csv":
 		return file.NewReader(source, sep(sType), '\n', quote, 0, skip, 0, f, 0), nil
 	case "xlsx", "xls":
-		// if sType = "xls" then convert to xlsx
+		// if sType = "xls" then convert to xlsx in the same directory
 		if sType == "xls" {
-			c := exec.Command("bash", "-c", "libreoffice --headless --convert-to xlsx -outdir /tmp/ "+source)
+			args := []string{"--headless", "--convert-to", "xlsx", "--outdir", getDir(source), source}
+			c := exec.Command("libreoffice", args...)
 			if e := c.Run(); e != nil {
 				return nil, e
 			}
