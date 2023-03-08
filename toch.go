@@ -27,22 +27,23 @@
 //
 // Optional command line arguments:
 //
-//	-host           IP of ClickHouse database. Default: 127.0.0.1
-//	-user           ClickHouse user. Default: "default"
-//	-password       ClickHouse password. Default: ""
-//	-c [Y/N]        convert field names to camel case. Default N
-//	-i [Y/N]        ignore read errors. Default: N
-//	-skip <n>       rows to skip at beginning of file. Default: 0.
-//	-q <char>       character for delimiting text. Default: "
-//	-h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
-//	-t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
-//	    f   Float64
-//	    i   Int64
-//	    d   Date
-//	    s   String
-//	 -sheet          sheet name for Excel inputs. Default: first sheet in the workbook.
-//	 -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
-//	 -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
+//		-host           IP of ClickHouse database. Default: 127.0.0.1
+//		-user           ClickHouse user. Default: "default"
+//		-password       ClickHouse password. Default: ""
+//		-c [Y/N]        convert field names to camel case. Default N
+//		-i [Y/N]        ignore read errors. Default: N
+//		-skip <n>       rows to skip at beginning of file. Default: 0.
+//		-q <char>       character for delimiting text. Default: "
+//	    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
+//		-h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
+//		-t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
+//		    f   Float64
+//		    i   Int64
+//		    d   Date
+//		    s   String
+//		 -sheet          sheet name for Excel inputs. Default: first sheet in the workbook.
+//		 -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
+//		 -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
 //
 // Notes:
 //   - S and E are 0-based indices.
@@ -96,13 +97,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/invertedv/chutils"
-	"github.com/invertedv/chutils/file"
-	"github.com/invertedv/chutils/sql"
-	"github.com/invertedv/chutils/str"
-	"github.com/xuri/excelize/v2"
-	"io/ioutil"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -111,6 +106,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/invertedv/chutils"
+	"github.com/invertedv/chutils/file"
+	"github.com/invertedv/chutils/sql"
+	"github.com/invertedv/chutils/str"
+	"github.com/xuri/excelize/v2"
 )
 
 // types of file formats toch handles
@@ -141,6 +143,7 @@ func main() {
 	quotePtr := flag.String("q", `"`, "string")
 	skipPtr := flag.Int("skip", 0, "int")
 	ignorePtr := flag.String("i", "N", "string")
+	datePtr := flag.String("dateFormat", "1/2/2006", "string")
 
 	xlRowsPtr := flag.String("rows", "0:0", "string")
 	xlColsPtr := flag.String("cols", "0:0", "string")
@@ -167,7 +170,7 @@ func main() {
 	}()
 
 	s := time.Now()
-	rdr, err := buildReader(*sourcePtr, *sTypePtr, *skipPtr, quote, camel, headers, fieldTypes, xlArea, *xlSheetPtr, *tablePtr, con)
+	rdr, err := buildReader(*sourcePtr, *sTypePtr, *datePtr, *skipPtr, quote, camel, headers, fieldTypes, xlArea, *xlSheetPtr, *tablePtr, con)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -192,11 +195,11 @@ func main() {
 	ts := int(time.Since(s).Seconds())
 	mins := ts / 60
 	secs := ts % 60
-	fmt.Printf("elapsed time: %d minutes %d seconds", mins, secs)
+	fmt.Printf("elapsed time: %d minutes %d seconds\n", mins, secs)
 }
 
 // buildReader creates a reader for chutils.Export. It handles options regarding field names and types
-func buildReader(source string, sType string, skip int, quote rune, camel bool, headers []string, fieldTypes []string, xl []int, xlSheet string, table string, con *chutils.Connect) (*file.Reader, error) {
+func buildReader(source, sType, dateFmt string, skip int, quote rune, camel bool, headers []string, fieldTypes []string, xl []int, xlSheet string, table string, con *chutils.Connect) (*file.Reader, error) {
 	// if reading a header row, need to skip it before reading data.
 	if len(headers) == 0 {
 		skip += 1
@@ -247,6 +250,7 @@ func buildReader(source string, sType string, skip int, quote rune, camel bool, 
 			switch fieldTypes[ind] {
 			case "d":
 				fd.ChSpec.Base, fd.Missing = chutils.ChDate, time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+				fd.ChSpec.Format = dateFmt
 			case "i":
 				fd.ChSpec.Base, fd.ChSpec.Length, fd.Missing = chutils.ChInt, 64, math.MaxInt64
 			case "f":
@@ -275,13 +279,12 @@ func NewReader(source string, sType string, quote rune, skip int, xl []int, xlSh
 // newHttp creates a reader for data coming via http.
 // The package excelize cannot read .xls files.  So these are downloaded, converted to .xlsx and a file reader is created.
 func newHttp(source string, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
-
 	// get the data.  We will put into a string reader.
 	resp, err := http.Get(source)
 	if err != nil {
 		return nil, err
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -507,6 +510,7 @@ Optional command line arguments:
        i   Int64
        d   Date
        s   String
+    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
     -sheet          sheet name for Excel inputs.  If this is omitted, the first sheet is read.
     -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
     -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0

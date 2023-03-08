@@ -39,6 +39,8 @@ Optional command line arguments:
                         d   Date
                         s   String
 
+    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
+
      -sheet          sheet name for Excel inputs.  Default: first sheet in the workbook.
      -rows <S:E>     start row:end row range from which to pull data from Excel inputs. 
                      If E=0, all rows after S are taken. Default: 0:0
