@@ -27,6 +27,7 @@ Optional command line arguments:
     -host           IP of ClickHouse database.                Default: 127.0.0.1
     -user           ClickHouse user.                          Default: "default"
     -password       ClickHouse password.                      Default: "" (empty)
+    -agent          user agent for http requests (optional)
     -c [Y/N]        convert field names to camel case.        Default N
     -q <char>       character for delimiting text.            Default: " (double quote)
     -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. 

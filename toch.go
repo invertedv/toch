@@ -27,23 +27,24 @@
 //
 // Optional command line arguments:
 //
-//		-host           IP of ClickHouse database. Default: 127.0.0.1
-//		-user           ClickHouse user. Default: "default"
-//		-password       ClickHouse password. Default: ""
-//		-c [Y/N]        convert field names to camel case. Default N
-//		-i [Y/N]        ignore read errors. Default: N
-//		-skip <n>       rows to skip at beginning of file. Default: 0.
-//		-q <char>       character for delimiting text. Default: "
-//	    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
-//		-h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
-//		-t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
-//		    f   Float64
-//		    i   Int64
-//		    d   Date
-//		    s   String
-//		 -sheet          sheet name for Excel inputs. Default: first sheet in the workbook.
-//		 -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
-//		 -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
+//			-host           IP of ClickHouse database. Default: 127.0.0.1
+//			-user           ClickHouse user. Default: "default"
+//			-password       ClickHouse password. Default: ""
+//	     -agent          user agent for http requests (optional)
+//			-c [Y/N]        convert field names to camel case. Default N
+//			-i [Y/N]        ignore read errors. Default: N
+//			-skip <n>       rows to skip at beginning of file. Default: 0.
+//			-q <char>       character for delimiting text. Default: "
+//		    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
+//			-h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the data.
+//			-t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the data. Supported types are:
+//			    f   Float64
+//			    i   Int64
+//			    d   Date
+//			    s   String
+//			 -sheet          sheet name for Excel inputs. Default: first sheet in the workbook.
+//			 -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
+//			 -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
 //
 // Notes:
 //   - S and E are 0-based indices.
@@ -98,7 +99,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"os"
@@ -113,6 +113,13 @@ import (
 	"github.com/invertedv/chutils/sql"
 	"github.com/invertedv/chutils/str"
 	"github.com/xuri/excelize/v2"
+
+	_ "embed"
+)
+
+var (
+	//go:embed README.md
+	helpMessage string
 )
 
 // types of file formats toch handles
@@ -131,6 +138,7 @@ func main() {
 	hostPtr := flag.String("host", "127.0.0.1", "string")
 	userPtr := flag.String("user", "default", "string")
 	passwordPtr := flag.String("password", "", "string")
+	agentPtr := flag.String("agent", "NA", "string")
 
 	tablePtr := flag.String("table", "", "string")
 
@@ -155,13 +163,13 @@ func main() {
 		flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr, skipPtr, ignorePtr)
 	if err != nil {
 		help() // print help string
-		log.Fatalln(err)
+		panic(err)
 	}
 
 	// connect to ClickHouse
 	con, err := chutils.NewConnect(*hostPtr, *userPtr, *passwordPtr, clickhouse.Settings{"max_memory_usage": 40000000000})
 	if err != nil {
-		log.Fatalln(err)
+		panic(err)
 	}
 	defer func() {
 		if e := con.Close(); e != nil {
@@ -170,9 +178,9 @@ func main() {
 	}()
 
 	s := time.Now()
-	rdr, err := buildReader(*sourcePtr, *sTypePtr, *datePtr, *skipPtr, quote, camel, headers, fieldTypes, xlArea, *xlSheetPtr, *tablePtr, con)
+	rdr, err := buildReader(*sourcePtr, *agentPtr, *sTypePtr, *datePtr, *skipPtr, quote, camel, headers, fieldTypes, xlArea, *xlSheetPtr, *tablePtr, con)
 	if err != nil {
-		log.Fatalln(err)
+		panic(err)
 	}
 	defer func() {
 		if e := rdr.Close(); e != nil {
@@ -190,7 +198,7 @@ func main() {
 
 	// now do the transfer.  If the csv is large (>1GB), the connection will be reset if after=0
 	if e := chutils.Export(rdr, wtr, 1000, ignore); e != nil {
-		log.Fatalln(e)
+		panic(e)
 	}
 	ts := int(time.Since(s).Seconds())
 	mins := ts / 60
@@ -199,13 +207,13 @@ func main() {
 }
 
 // buildReader creates a reader for chutils.Export. It handles options regarding field names and types
-func buildReader(source, sType, dateFmt string, skip int, quote rune, camel bool, headers []string, fieldTypes []string, xl []int, xlSheet string, table string, con *chutils.Connect) (*file.Reader, error) {
+func buildReader(source, agent, sType, dateFmt string, skip int, quote rune, camel bool, headers, fieldTypes []string, xl []int, xlSheet string, table string, con *chutils.Connect) (*file.Reader, error) {
 	// if reading a header row, need to skip it before reading data.
 	if len(headers) == 0 {
 		skip += 1
 	}
 	// Get the reader
-	rdr, err := NewReader(source, sType, quote, skip, xl, xlSheet)
+	rdr, err := NewReader(source, agent, sType, quote, skip, xl, xlSheet)
 	if err != nil {
 		return nil, err
 	}
@@ -268,25 +276,32 @@ func buildReader(source, sType, dateFmt string, skip int, quote rune, camel bool
 }
 
 // NewReader creates the appropriate kind of reader
-func NewReader(source string, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
+func NewReader(source, agent, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
 	if strings.Contains(strings.ToLower(source), "http") {
 		// newHttp pulls the data as well.
-		return newHttp(source, sType, quote, skip, xl, xlSheet)
+		return newHttp(source, agent, sType, quote, skip, xl, xlSheet)
 	}
 	return newFile(source, sType, quote, skip, xl, xlSheet)
 }
 
 // newHttp creates a reader for data coming via http.
 // The package excelize cannot read .xls files.  So these are downloaded, converted to .xlsx and a file reader is created.
-func newHttp(source string, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
+func newHttp(source, agent, sType string, quote rune, skip int, xl []int, xlSheet string) (*file.Reader, error) {
 	// get the data.  We will put into a string reader.
-	resp, err := http.Get(source)
-	if err != nil {
-		return nil, err
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", source, nil)
+
+	if agent != "NA" {
+		req.Header.Set("User-Agent", agent)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+
+	r, _ := client.Do(req)
+	defer func() { _ = r.Body.Close() }()
+
+	var err error
+	var body []byte
+	if body, err = io.ReadAll(r.Body); err != nil {
+		panic(err)
 	}
 
 	switch sType {
@@ -357,7 +372,6 @@ func newFile(source string, sType string, quote rune, skip int, xl []int, xlShee
 	default:
 		return nil, fmt.Errorf("illegal -type")
 	}
-
 }
 
 // toCamel converts from snake case to camel case.
@@ -411,7 +425,6 @@ func sep(sType string) rune {
 //   - err          error
 func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsPtr *string,
 	skipPtr *int, ignorePtr *string) (headers []string, fieldTypes []string, camel bool, ignore bool, quote rune, xlArea []int, err error) {
-
 	headers = make([]string, 0)
 	fieldTypes = make([]string, 0)
 	camel = false
@@ -488,46 +501,5 @@ func flags(sTypePtr, camelPtr, headerPtr, fieldPtr, quotePtr, xlRowsPtr, xlColsP
 
 // help prints out some help when the command line arguments don't parse correctly
 func help() {
-	help := `
-Required command line arguments:
-   -s       source of data. This is either a file or web address.
-   -type    type of data.  Supported types are:
-         -text   tab delimited
-         -csv    comma separated
-         -xls    Excel XLS
-         -xlsx   Excel XLSX
-   -table   destination ClickHouse table.
-
-Optional command line arguments:
-   -host           IP of ClickHouse database. Default: 127.0.0.1
-   -user           ClickHouse user. Default: "default"
-   -password       ClickHouse password. Default: ""
-   -c [Y/N]        convert field names to camel case. Default N
-   -q <char>       character for delimiting text. Default: "
-   -h 'f1,f2,...'  the field names are comma separated and the entire list is enclosed in single quotes. The default is to read these from the file.
-   -t 't1,t2,...'  the types are comma separated and the entire list is encludes in single quotes. The default is to infer these from the file. Supported types are:
-       f   Float64
-       i   Int64
-       d   Date
-       s   String
-    -dateFormat     format for dates using Jan 2, 2006 as the prototype, e.g. 1/2/2006 or 20060102
-    -sheet          sheet name for Excel inputs.  If this is omitted, the first sheet is read.
-    -rows <S:E>     start row:end row range from which to pull data from Excel inputs. If E=0, all rows after S are taken. Default: 0:0
-    -cols <S:E>     start column:end column range from which to pull data from Excel inputs. If E=0, all columns after S are taken. Default 0:0
-Notes:
-  - S and E are 0-based indices.
-  - if -h is supplied, the list must include all fields.
-  - if -t is supplied, the list must included all fields.
-  - The options -h and -t are independent: one can be supplied without the other.
-  - ctrl-R's in the data are ignored.
-  - The -skip parameter works with spreadsheets, too. It is applied within (any possible) range supplied by -rows.
-
-Values that are illegal for the field type are filled in as:
-   - Float64  the maximum value for Float64 (~E308)
-   - Int64    the maximum value for Int64 (9223372036854775807)
-   - Date     1970/1/1
-   - String   "!"
-
-`
-	fmt.Println(help)
+	fmt.Println(helpMessage)
 }
