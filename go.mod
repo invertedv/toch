@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.18.0
-	github.com/invertedv/chutils v1.1.33
+	github.com/invertedv/chutils v1.1.34
 	github.com/xuri/excelize/v2 v2.8.0
 )
 
